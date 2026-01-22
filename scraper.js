@@ -548,9 +548,16 @@ async function runOnce(options) {
   try {
     browser = await chromium.launch({ headless: true });
   } catch (err) {
-    if (err.message.includes('Executable doesn\'t exist') || err.message.includes('browserType.launch')) {
+    if (err.message.includes('Executable doesn\'t exist')) {
       console.error('Error: Playwright browser not installed.');
       console.error('Run: npx playwright install chromium');
+      process.exit(1);
+    }
+    if (err.message.includes('Host system is missing dependencies') ||
+        err.message.includes('missing libraries') ||
+        err.message.includes('.so.')) {
+      console.error('Error: System dependencies missing for Playwright.');
+      console.error('Run: sudo npx playwright install-deps chromium');
       process.exit(1);
     }
     throw err;
