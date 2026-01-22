@@ -32,22 +32,68 @@ function saveSentLog(log) {
   fs.writeFileSync(SENT_LOG_FILE, JSON.stringify(log, null, 2));
 }
 
-function hashActivityLog(data) {
-  // Create a hash of the activity content to detect changes
-  const content = JSON.stringify(data.activities.map(a => ({
-    task: a.TaskDescription,
-    note: a.Note
-  })));
-  return crypto.createHash('md5').update(content).digest('hex');
+function getActivityKey(activity) {
+  // Create a unique key for an activity based on task and note content
+  // This identifies an activity regardless of when we scraped it
+  return crypto.createHash('md5')
+    .update(activity.TaskDescription + '|' + activity.Note)
+    .digest('hex');
 }
 
-function hasBeenSent(dateStr, hash, sentLog) {
-  return sentLog[dateStr] === hash;
+function getSentActivities(dateStr, sentLog) {
+  // Return set of activity keys that have been sent for this date
+  const entry = sentLog[dateStr];
+  if (!entry || !entry.activityKeys) {
+    return new Set();
+  }
+  return new Set(entry.activityKeys);
 }
 
-function markAsSent(dateStr, hash, sentLog) {
-  sentLog[dateStr] = hash;
+function markActivitiesAsSent(dateStr, activities, sentLog) {
+  const keys = activities.map(a => getActivityKey(a));
+  const existing = sentLog[dateStr]?.activityKeys || [];
+  sentLog[dateStr] = {
+    activityKeys: [...new Set([...existing, ...keys])],
+    lastSent: new Date().toISOString()
+  };
   saveSentLog(sentLog);
+}
+
+function filterNewActivities(activities, sentActivityKeys) {
+  // Return only activities that haven't been sent yet
+  return activities.filter(a => !sentActivityKeys.has(getActivityKey(a)));
+}
+
+function isRoutineEntry(activity) {
+  // Check if this is a routine task completion without meaningful content
+  const note = activity.Note || '';
+  const task = activity.TaskDescription || '';
+
+  // Skip if note is just "Completed by X on DATE" or "Checked by X on DATE"
+  if (/^(Completed|Checked)\s+by\s+\w+\s+on\s+[\d-]+\s+[\d:]+$/.test(note.trim())) {
+    return true;
+  }
+
+  // Get excluded task patterns from env (comma-separated)
+  const excludePatterns = (process.env.EXCLUDE_TASK_PATTERNS || 'Wash Hands,Hydration,Medication,Personal Care')
+    .split(',')
+    .map(p => p.trim().toLowerCase())
+    .filter(p => p);
+
+  // Check if task matches any excluded pattern
+  const taskLower = task.toLowerCase();
+  for (const pattern of excludePatterns) {
+    if (taskLower.includes(pattern)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function filterMeaningfulActivities(activities) {
+  // Filter to only activities with meaningful content
+  return activities.filter(a => !isRoutineEntry(a));
 }
 
 // Parse command line arguments
@@ -280,49 +326,92 @@ async function getActivityLog(page, date = null) {
   const dateHeader = await page.$eval('h3', el => el.textContent.trim());
   console.log('Page header:', dateHeader);
 
-  // Extract the data from the Kendo grid's embedded JSON
+  // Collect all activities across all pages
+  let allActivities = [];
+  let currentPage = 1;
+  let totalPages = 1;
+
+  // Check for pagination
+  const pagerInfo = await page.$('.k-pager-info');
+  if (pagerInfo) {
+    const pagerText = await pagerInfo.textContent();
+    // Parse "1 - 10 of 25 items" or similar
+    const totalMatch = pagerText.match(/of\s+(\d+)\s+items/i);
+    if (totalMatch) {
+      const totalItems = parseInt(totalMatch[1]);
+      const pageSize = 10; // Kendo default
+      totalPages = Math.ceil(totalItems / pageSize);
+      console.log(`Found ${totalItems} total items across ${totalPages} pages`);
+    }
+  }
+
+  // Loop through all pages
+  while (currentPage <= totalPages) {
+    if (currentPage > 1) {
+      console.log(`Fetching page ${currentPage}/${totalPages}...`);
+      // Click the page number or next button
+      const pageButton = await page.$(`.k-pager-numbers .k-link:has-text("${currentPage}")`);
+      if (pageButton) {
+        await pageButton.click();
+        await page.waitForTimeout(1500);
+      } else {
+        // Try next button
+        const nextButton = await page.$('.k-pager-nav.k-pager-next:not(.k-state-disabled)');
+        if (nextButton) {
+          await nextButton.click();
+          await page.waitForTimeout(1500);
+        } else {
+          break;
+        }
+      }
+    }
+
+    // Extract activities from current page
+    const pageActivities = await extractActivitiesFromPage(page);
+    allActivities = allActivities.concat(pageActivities);
+
+    currentPage++;
+  }
+
+  console.log(`Found ${allActivities.length} total activity entries`);
+  return { date: dateHeader, activities: allActivities };
+}
+
+async function extractActivitiesFromPage(page) {
   const pageContent = await page.content();
 
   // Find the JSON data in the script
   const dataMatch = pageContent.match(/"data":\{"Data":\[(.*?)\],"Total"/s);
-  if (!dataMatch) {
-    console.log('No activity data found in page');
-    return { date: dateHeader, activities: [] };
+  if (dataMatch) {
+    try {
+      const jsonStr = '[' + dataMatch[1] + ']';
+      return JSON.parse(jsonStr);
+    } catch (e) {
+      console.log('Error parsing JSON, using fallback');
+    }
   }
 
-  try {
-    const jsonStr = '[' + dataMatch[1] + ']';
-    const activities = JSON.parse(jsonStr);
-    console.log(`Found ${activities.length} activity entries`);
-    return { date: dateHeader, activities };
-  } catch (e) {
-    console.log('Error parsing activity data:', e.message);
+  // Fallback: parse from table rows
+  const activities = await page.$$eval('#grdTaskResponse .k-grouping-row, #grdTaskResponse tr[data-uid]', rows => {
+    const result = [];
+    let currentTask = null;
 
-    // Fallback: parse from table rows
-    const activities = await page.$$eval('#grdTaskResponse .k-grouping-row, #grdTaskResponse tr[data-uid]', rows => {
-      const result = [];
-      let currentTask = null;
-
-      for (const row of rows) {
-        if (row.classList.contains('k-grouping-row')) {
-          // Task header row
-          const taskText = row.querySelector('p')?.textContent?.trim() || '';
-          currentTask = { TaskDescription: taskText, Note: '' };
-        } else if (row.hasAttribute('data-uid')) {
-          // Note row
-          const note = row.querySelector('td[role="gridcell"]')?.textContent?.trim() || '';
-          if (currentTask) {
-            currentTask.Note = note;
-            result.push({ ...currentTask });
-          }
+    for (const row of rows) {
+      if (row.classList.contains('k-grouping-row')) {
+        const taskText = row.querySelector('p')?.textContent?.trim() || '';
+        currentTask = { TaskDescription: taskText, Note: '' };
+      } else if (row.hasAttribute('data-uid')) {
+        const note = row.querySelector('td[role="gridcell"]')?.textContent?.trim() || '';
+        if (currentTask) {
+          currentTask.Note = note;
+          result.push({ ...currentTask });
         }
       }
-      return result;
-    });
+    }
+    return result;
+  });
 
-    console.log(`Fallback: Found ${activities.length} activity entries`);
-    return { date: dateHeader, activities };
-  }
+  return activities;
 }
 
 function formatActivityLog(data) {
@@ -339,8 +428,12 @@ function formatActivityLog(data) {
     return 0;
   });
 
+  const countInfo = data.newCount && data.totalCount
+    ? ` (${data.newCount} new of ${data.totalCount} total)`
+    : '';
+
   // Plain text version
-  let text = `${data.date}\n`;
+  let text = `${data.date}${countInfo}\n`;
   text += '='.repeat(50) + '\n\n';
 
   for (const activity of sortedActivities) {
@@ -508,14 +601,36 @@ async function processDate(page, date, sentLog, force = false) {
     return { sent: false, skipped: true };
   }
 
-  // Check if already sent (unless force mode)
-  const hash = hashActivityLog(data);
-  if (!force && hasBeenSent(dateStr, hash, sentLog)) {
-    console.log(`Activity log for ${dateStr} already sent (unchanged) - skipping`);
+  // Filter out routine entries (configurable via EXCLUDE_TASK_PATTERNS)
+  const meaningfulActivities = filterMeaningfulActivities(data.activities);
+  console.log(`${meaningfulActivities.length} meaningful entries (filtered from ${data.activities.length} total)`);
+
+  if (meaningfulActivities.length === 0) {
+    console.log(`No meaningful activity entries for ${dateStr} - skipping`);
+    return { sent: false, skipped: true };
+  }
+
+  // Get previously sent activities for this date
+  const sentActivityKeys = force ? new Set() : getSentActivities(dateStr, sentLog);
+
+  // Filter to only new activities
+  const newActivities = filterNewActivities(meaningfulActivities, sentActivityKeys);
+
+  if (newActivities.length === 0) {
+    console.log(`No new activity entries for ${dateStr} - skipping`);
     return { sent: false, skipped: true, alreadySent: true };
   }
 
-  const content = formatActivityLog(data);
+  console.log(`Found ${newActivities.length} NEW meaningful activity entries`);
+
+  // Format email with only new activities
+  const content = formatActivityLog({
+    date: data.date,
+    activities: newActivities,
+    newCount: newActivities.length,
+    totalCount: meaningfulActivities.length
+  });
+
   if (!content) {
     console.log('No content to send');
     return { sent: false, skipped: true };
@@ -524,12 +639,12 @@ async function processDate(page, date, sentLog, force = false) {
   // Build subject with date and current timestamp
   const now = new Date();
   const timeStr = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
-  const subject = `Home Instead Activity Log Update - ${dateStr} (${timeStr})`;
+  const subject = `Home Instead Activity Log Update - ${dateStr} (${timeStr}) - ${newActivities.length} new`;
 
   const emailSent = await sendEmail(subject, content);
 
   if (emailSent) {
-    markAsSent(dateStr, hash, sentLog);
+    markActivitiesAsSent(dateStr, newActivities, sentLog);
   }
 
   return { sent: emailSent, skipped: false };
