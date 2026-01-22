@@ -216,10 +216,14 @@ function formatScheduleEmail(schedule, today) {
     }
   }
 
-  // Build subject summary for today
+  // Build subject summary for today with times
   let subjectSummary;
   if (todaySchedule && todaySchedule.visits.length > 0) {
-    subjectSummary = `Today: ${getCarerSummary(todaySchedule.visits)}`;
+    const visitSummaries = todaySchedule.visits.map(v => {
+      const firstName = v.caregiver.split(',')[1]?.trim() || v.caregiver.split(',')[0];
+      return `${firstName} ${v.start}-${v.end}`;
+    });
+    subjectSummary = `Today: ${visitSummaries.join(', ')}`;
   } else {
     subjectSummary = 'No visits today';
   }
