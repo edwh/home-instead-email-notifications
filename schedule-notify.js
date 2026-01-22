@@ -374,9 +374,9 @@ async function main() {
     const today = new Date();
     const todayKey = today.toISOString().split('T')[0];
 
-    // Search through recent timesheets (most recent first) to find one covering today
-    let bestSchedule = null;
-    const recentUids = uids.slice(-5).reverse(); // Last 5, most recent first
+    // Merge schedules from ALL recent timesheets
+    const mergedSchedule = {};
+    const recentUids = uids.slice(-10).reverse(); // Last 10, most recent first
 
     for (const uid of recentUids) {
       console.log(`Checking timesheet (UID: ${uid})...`);
@@ -393,30 +393,49 @@ async function main() {
       const pdfText = await extractTextFromPDF(pdfAttachment.content);
       const schedule = parseScheduleFromPDF(pdfText);
 
-      const scheduleDates = Object.keys(schedule);
+      const scheduleDates = Object.keys(schedule).sort();
       console.log(`  Covers: ${scheduleDates[0]} to ${scheduleDates[scheduleDates.length - 1]}`);
 
-      // Check if this schedule covers today
-      if (schedule[todayKey]) {
-        console.log(`  Found schedule covering today!`);
-        bestSchedule = schedule;
-        break;
-      }
-
-      // Keep the most recent schedule as fallback
-      if (!bestSchedule) {
-        bestSchedule = schedule;
+      // Merge into combined schedule (newer timesheets take precedence)
+      for (const [dateKey, dayData] of Object.entries(schedule)) {
+        if (!mergedSchedule[dateKey]) {
+          mergedSchedule[dateKey] = dayData;
+        }
       }
     }
 
-    if (!bestSchedule || Object.keys(bestSchedule).length === 0) {
+    if (Object.keys(mergedSchedule).length === 0) {
       console.log('No schedule data found');
       return;
     }
 
+    console.log(`\nMerged schedule covers ${Object.keys(mergedSchedule).length} days`);
+
+    // Check for missing coverage data within alert threshold
+    const MISSING_DATA_ALERT_DAYS = parseInt(process.env.MISSING_DATA_ALERT_DAYS || '4');
+    const missingDays = [];
+
+    for (let i = 0; i < MISSING_DATA_ALERT_DAYS; i++) {
+      const checkDate = new Date(today);
+      checkDate.setDate(checkDate.getDate() + i);
+      const checkKey = checkDate.toISOString().split('T')[0];
+
+      if (!mergedSchedule[checkKey]) {
+        missingDays.push(checkDate.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }));
+      }
+    }
+
     // Format and send email
-    const content = formatScheduleEmail(bestSchedule, today);
-    const subject = `Home Instead Schedule - ${content.subjectSummary}${content.gapAlert}`;
+    const content = formatScheduleEmail(mergedSchedule, today);
+
+    // Add missing data alert if needed
+    let missingAlert = '';
+    if (missingDays.length > 0) {
+      missingAlert = ` ⚠️ NO TIMESHEET: ${missingDays.join(', ')}`;
+      console.log(`Missing schedule data for: ${missingDays.join(', ')}`);
+    }
+
+    const subject = `Home Instead Schedule - ${content.subjectSummary}${content.gapAlert}${missingAlert}`;
 
     if (content.gapDays.length > 0) {
       console.log(`Coverage gaps detected on: ${content.gapDays.join(', ')}`);
