@@ -12,6 +12,12 @@ screenshots/
 email-preview.html
 page-*.html
 
+# PDF samples (test data)
+pdf-samples/
+
+# Swap files
+*.swp
+
 # Node
 node_modules/
 
