@@ -75,7 +75,7 @@ function isRoutineEntry(activity) {
   }
 
   // Get excluded task patterns from env (comma-separated)
-  const excludePatterns = (process.env.EXCLUDE_TASK_PATTERNS || 'Wash Hands,Hydration,Medication,Personal Care')
+  const excludePatterns = (process.env.EXCLUDE_TASK_PATTERNS || 'Wash Hands,Hydration,Medication,Personal Care,Welfare Check,Nutrition')
     .split(',')
     .map(p => p.trim().toLowerCase())
     .filter(p => p);
@@ -373,8 +373,19 @@ async function getActivityLog(page, date = null) {
     currentPage++;
   }
 
-  console.log(`Found ${allActivities.length} total activity entries`);
-  return { date: dateHeader, activities: allActivities };
+  // Deduplicate activities based on content
+  const seen = new Set();
+  const uniqueActivities = allActivities.filter(a => {
+    const key = getActivityKey(a);
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+
+  console.log(`Found ${uniqueActivities.length} unique activity entries (${allActivities.length} before dedup)`);
+  return { date: dateHeader, activities: uniqueActivities };
 }
 
 async function extractActivitiesFromPage(page) {
