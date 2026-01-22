@@ -1,0 +1,20 @@
+# Environment and secrets
+.env
+!.env.example
+
+# Tracking and logs
+sent-emails.json
+scraper.log
+scraper.pid
+
+# Screenshots and HTML previews
+screenshots/
+email-preview.html
+page-*.html
+
+# Node
+node_modules/
+
+# OS files
+.DS_Store
+Thumbs.db
