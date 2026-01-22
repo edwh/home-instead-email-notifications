@@ -5,7 +5,6 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PID_FILE="$SCRIPT_DIR/scraper.pid"
 LOG_FILE="$SCRIPT_DIR/scraper.log"
-NODE_PATH="/home/edward/.nvm/versions/node/v22.21.1/bin/node"
 
 # Kill any existing instance
 if [ -f "$PID_FILE" ]; then
@@ -25,7 +24,7 @@ fi
 # Start new instance
 cd "$SCRIPT_DIR"
 echo "$(date): Starting scraper" >> "$LOG_FILE"
-"$NODE_PATH" scraper.js >> "$LOG_FILE" 2>&1 &
+node scraper.js >> "$LOG_FILE" 2>&1 &
 NEW_PID=$!
 echo "$NEW_PID" > "$PID_FILE"
 echo "$(date): Started with PID $NEW_PID" >> "$LOG_FILE"
