@@ -1,9 +1,18 @@
 require('dotenv').config();
-const { chromium } = require('playwright');
 const nodemailer = require('nodemailer');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+
+// Check Playwright is available
+let chromium;
+try {
+  chromium = require('playwright').chromium;
+} catch (err) {
+  console.error('Error: Playwright not installed properly.');
+  console.error('Run: npm install && npx playwright install chromium');
+  process.exit(1);
+}
 
 const SENT_LOG_FILE = path.join(__dirname, 'sent-emails.json');
 
@@ -535,7 +544,17 @@ async function runOnce(options) {
   if (force) console.log('Force mode: will send even if already sent');
   console.log('');
 
-  const browser = await chromium.launch({ headless: true });
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+  } catch (err) {
+    if (err.message.includes('Executable doesn\'t exist') || err.message.includes('browserType.launch')) {
+      console.error('Error: Playwright browser not installed.');
+      console.error('Run: npx playwright install chromium');
+      process.exit(1);
+    }
+    throw err;
+  }
   const context = await browser.newContext();
   const page = await context.newPage();
   page.setDefaultTimeout(60000);
