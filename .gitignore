@@ -6,6 +6,7 @@
 sent-emails.json
 scraper.log
 scraper.pid
+schedule-notify.log
 
 # Screenshots and HTML previews
 screenshots/
