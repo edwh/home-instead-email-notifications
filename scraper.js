@@ -187,7 +187,7 @@ function getDateRange(from, to) {
 }
 
 const MAX_RETRIES = 3;
-const RETRY_DELAY = 5000; // 5 seconds
+const RETRY_DELAY = 10000; // 10 seconds
 
 async function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -690,7 +690,7 @@ async function runOnce(options) {
   }
   const context = await browser.newContext();
   const page = await context.newPage();
-  page.setDefaultTimeout(60000);
+  page.setDefaultTimeout(90000);
 
   let successCount = 0;
   let skipCount = 0;
