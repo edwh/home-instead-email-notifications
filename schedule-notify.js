@@ -21,7 +21,10 @@ async function extractTextFromPDF(buffer) {
   return text;
 }
 
-const SENDER = 'enquiries.bolton@homeinstead.co.uk';
+const SENDERS = [
+  'enquiries.bolton@homeinstead.co.uk',
+  'enquiries@bolton.homeinstead.co.uk'
+];
 
 function connectImap() {
   return new Promise((resolve, reject) => {
@@ -143,6 +146,42 @@ function timeToMinutes(timeStr) {
   return h * 60 + m;
 }
 
+function parseDurationMinutes(durationStr) {
+  const match = durationStr.match(/(\d+):(\d+)h/);
+  if (!match) return 0;
+  return parseInt(match[1]) * 60 + parseInt(match[2]);
+}
+
+function isCompanionshipVisit(visit) {
+  // Live-in care visits are 10+ hours; companionship visits are always under 10h
+  return parseDurationMinutes(visit.duration) < 600;
+}
+
+function calculateMonthToDateHours(schedule, today) {
+  const year = today.getFullYear();
+  const month = today.getMonth();
+  const firstOfMonth = new Date(year, month, 1);
+  const todayDay = today.getDate();
+
+  let totalMinutes = 0;
+  for (let day = 1; day <= todayDay; day++) {
+    const dateKey = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    const dayData = schedule[dateKey];
+    if (!dayData) continue;
+
+    for (const v of dayData.visits) {
+      if (isCompanionshipVisit(v)) {
+        totalMinutes += parseDurationMinutes(v.duration);
+      }
+    }
+  }
+
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  const monthName = firstOfMonth.toLocaleDateString('en-GB', { month: 'long' });
+  return { totalMinutes, hours, minutes, monthName };
+}
+
 function checkCoverageGaps(visits) {
   // Check for gaps between configured hours (defaults: 9am-6pm, max gap 2 hours)
   const START_OF_DAY = parseInt(process.env.COVERAGE_START_HOUR || '9') * 60;
@@ -189,7 +228,7 @@ function checkCoverageGaps(visits) {
   };
 }
 
-function formatScheduleEmail(schedule, today) {
+function formatScheduleEmail(schedule, today, mtdHours) {
   const todayKey = today.toISOString().split('T')[0];
   const todaySchedule = schedule[todayKey];
 
@@ -253,6 +292,13 @@ function formatScheduleEmail(schedule, today) {
     text += '\n';
   }
 
+  // Add month-to-date hours summary
+  if (mtdHours) {
+    const mtdStr = mtdHours.minutes > 0 ? `${mtdHours.hours}h ${mtdHours.minutes}m` : `${mtdHours.hours}h`;
+    text += `${'='.repeat(50)}\n`;
+    text += `Companionship hours in ${mtdHours.monthName} (to date): ${mtdStr}\n`;
+  }
+
   // HTML version
   let html = `
 <!DOCTYPE html>
@@ -311,6 +357,20 @@ function formatScheduleEmail(schedule, today) {
     html += `</table>`;
   }
 
+  // Add month-to-date hours summary
+  if (mtdHours) {
+    const mtdStr = mtdHours.minutes > 0 ? `${mtdHours.hours}h ${mtdHours.minutes}m` : `${mtdHours.hours}h`;
+    html += `
+        <table width="100%" style="margin-top: 10px; border: 2px solid #e2e8f0; border-radius: 8px; overflow: hidden; background: #f7f3f9;">
+          <tr>
+            <td style="padding: 15px; text-align: center;">
+              <span style="color: #6b2c91; font-size: 14px;">Companionship hours in ${mtdHours.monthName} (to date):</span>
+              <span style="color: #6b2c91; font-weight: 700; font-size: 20px; margin-left: 8px;">${mtdStr}</span>
+            </td>
+          </tr>
+        </table>`;
+  }
+
   html += `
       </td>
     </tr>
@@ -362,8 +422,13 @@ async function main() {
     sinceDate.setDate(sinceDate.getDate() - 30);
     const sinceDateStr = sinceDate.toISOString().split('T')[0].replace(/-/g, '-');
 
-    console.log(`Searching for timesheet emails from ${SENDER} since ${sinceDateStr}...`);
-    const uids = await search(imap, [['FROM', SENDER], ['SUBJECT', 'Timesheet'], ['SINCE', sinceDate]]);
+    console.log(`Searching for timesheet emails since ${sinceDateStr}...`);
+    const allUids = new Set();
+    for (const sender of SENDERS) {
+      const senderUids = await search(imap, [['FROM', sender], ['SUBJECT', 'Timesheet'], ['SINCE', sinceDate]]);
+      senderUids.forEach(uid => allUids.add(uid));
+    }
+    const uids = [...allUids].sort((a, b) => a - b);
     console.log(`Found ${uids.length} timesheet emails`);
 
     if (uids.length === 0) {
@@ -425,8 +490,13 @@ async function main() {
       }
     }
 
+    // Calculate month-to-date companionship hours
+    const mtdHours = calculateMonthToDateHours(mergedSchedule, today);
+    const mtdStr = mtdHours.minutes > 0 ? `${mtdHours.hours}h ${mtdHours.minutes}m` : `${mtdHours.hours}h`;
+    console.log(`Companionship hours in ${mtdHours.monthName} (to date): ${mtdStr}`);
+
     // Format and send email
-    const content = formatScheduleEmail(mergedSchedule, today);
+    const content = formatScheduleEmail(mergedSchedule, today, mtdHours);
 
     // Add missing data alert if needed
     let missingAlert = '';
